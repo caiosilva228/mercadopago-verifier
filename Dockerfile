@@ -3,7 +3,6 @@
 # ==========================================
 FROM node:20-bookworm-slim AS base
 
-# Instala tesseract-ocr com idioma espanhol e utilitários
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-spa \
@@ -18,8 +17,8 @@ WORKDIR /app
 # 2. Dependências
 # ==========================================
 FROM base AS deps
-COPY package.json package-lock.json* ./
-RUN npm ci
+COPY package.json ./
+RUN npm install --legacy-peer-deps
 
 # ==========================================
 # 3. Build da Aplicação
@@ -31,14 +30,12 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
-# Variáveis fictícias apenas para validação de build estático se necessário
+# Variáveis seguras para permitir compilação estática do Next.js
 ENV NEXT_PUBLIC_SUPABASE_URL="https://placeholder.supabase.co"
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY="placeholder"
 
+RUN mkdir -p public dist
 RUN npm run build
-
-# Compila o worker em arquivo JS standalone
-RUN npx esbuild src/server/worker-runner.ts --bundle --platform=node --target=node20 --outfile=dist/worker.js --external:sharp --external:tesseract.js --external:pdf-parse --external:csv-parse
 
 # ==========================================
 # 4. Imagem de Execução (Runner)
@@ -51,18 +48,17 @@ ENV HOSTNAME="0.0.0.0"
 
 WORKDIR /app
 
-# Cria usuário não-root para segurança
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Copia artefatos do build standalone
+# Copia artefatos gerados
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/dist/worker.js ./dist/worker.js
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/start-all.js ./scripts/start-all.js
 
-# Instala apenas dependências nativas necessárias em runtime
+# Instala módulos nativos específicos de runtime no Linux se necessário
 COPY --from=deps /app/node_modules/sharp ./node_modules/sharp
 COPY --from=deps /app/node_modules/tesseract.js ./node_modules/tesseract.js
 COPY --from=deps /app/node_modules/pdf-parse ./node_modules/pdf-parse
