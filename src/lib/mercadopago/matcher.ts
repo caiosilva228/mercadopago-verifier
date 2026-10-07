@@ -41,11 +41,18 @@ export class PaymentMatcher {
       // Regra 1: Tipo de transação deve ser SETTLEMENT
       if (tx.transaction_type.toUpperCase() !== "SETTLEMENT") return false;
 
-      // Regra 2: Tipo de método de pagamento deve ser bank_transfer
-      if (tx.payment_method_type.toLowerCase() !== "bank_transfer") return false;
+      // Regra 2 & 3: Transferências recebidas via CVU/banco tradicional ou entre contas Mercado Pago (available_money / account_money)
+      const pmt = (tx.payment_method_type || "").toLowerCase();
+      const pm = (tx.payment_method || "").toLowerCase();
+      const isTransfer =
+        (pmt === "bank_transfer" && (pm === "cvu" || pm === "bank_transfer")) ||
+        (pmt === "available_money" && pm === "available_money") ||
+        (pmt === "account_money" && pm === "account_money") ||
+        pm === "cvu" ||
+        pmt === "available_money" ||
+        pmt === "account_money";
 
-      // Regra 3: Método de pagamento deve ser cvu
-      if (tx.payment_method.toLowerCase() !== "cvu") return false;
+      if (!isTransfer) return false;
 
       // Regra 4: Moeda exatamente igual
       if (tx.transaction_currency.toUpperCase() !== targetCurrency) return false;

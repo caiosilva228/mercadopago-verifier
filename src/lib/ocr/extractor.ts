@@ -133,29 +133,30 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     let transactionNumber: string | null = null;
 
     // --- IDENTIFICAÇÃO DE BANCO ---
-    const lowerText = fullText.toLowerCase();
-    if (lowerText.includes("cuenta dni") || lowerText.includes("banco provincia")) {
+    if (/cuenta[\s\S]{0,15}dni|banco\s*provincia/i.test(fullText)) {
       bankName = "Cuenta DNI";
-    } else if (lowerText.includes("nación") || lowerText.includes("nacion") || lowerText.includes("bna")) {
+    } else if (/banco\s*naci[oó]n|\bnaci[oó]n\b|\bbna\b/i.test(fullText)) {
       bankName = "Banco Nación";
-    } else if (lowerText.includes("mercado pago")) {
+    } else if (/mercado\s*pago/i.test(fullText)) {
       bankName = "Mercado Pago";
-    } else if (lowerText.includes("santander")) {
+    } else if (/santander/i.test(fullText)) {
       bankName = "Banco Santander";
-    } else if (lowerText.includes("galicia")) {
+    } else if (/galicia/i.test(fullText)) {
       bankName = "Banco Galicia";
-    } else if (lowerText.includes("bbva") || lowerText.includes("francés")) {
+    } else if (/bbva|franc[eé]s/i.test(fullText)) {
       bankName = "BBVA";
-    } else if (lowerText.includes("macro")) {
+    } else if (/macro/i.test(fullText)) {
       bankName = "Banco Macro";
-    } else if (lowerText.includes("brubank")) {
+    } else if (/brubank/i.test(fullText)) {
       bankName = "Brubank";
-    } else if (lowerText.includes("ualá") || lowerText.includes("uala")) {
+    } else if (/ual[aá]/i.test(fullText)) {
       bankName = "Ualá";
-    } else if (lowerText.includes("naranja x")) {
+    } else if (/naranja\s*x/i.test(fullText)) {
       bankName = "Naranja X";
-    } else if (lowerText.includes("credicoop")) {
+    } else if (/credicoop/i.test(fullText)) {
       bankName = "Banco Credicoop";
+    } else if (/personal\s*pay/i.test(fullText)) {
+      bankName = "Personal Pay";
     }
 
     // --- IDENTIFICAÇÃO DE MOEDA ---
@@ -234,11 +235,21 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     }
 
     // --- IDENTIFICAÇÃO DE CÓDIGOS E OPERAÇÃO ---
-    const opMatch = fullText.match(/(?:operaci[oó]n|transacci[oó]n|n[uú]mero|nro|id|c[oó]digo|comprobante)[\s:N°º#]*([0-9A-Za-z\-_]{6,30})/i);
-    if (opMatch && opMatch[1]) {
-      operationNumber = opMatch[1];
-      transactionReference = opMatch[1];
-      transactionNumber = opMatch[1];
+    const opRegexes = [
+      /(?:c[oó]digo\s+de\s+referencia|c[oó]digo\s+de\s+transferencia|referencia\s+bancaria|n[uú]mero\s+de\s+transacci[oó]n|n[uú]mero\s+de\s+operaci[oó]n)[\s:N°º#\n\r]*([0-9A-Za-z\-_]{6,35})/i,
+      /(?:operaci[oó]n|transacci[oó]n|n[uú]mero|nro|id|c[oó]digo|comprobante)[\s:N°º#\n\r]*([0-9A-Za-z\-_]{6,35})/i,
+    ];
+    for (const r of opRegexes) {
+      const match = fullText.match(r);
+      if (match && match[1]) {
+        const val = match[1].trim();
+        if (!/^(de|para|con|por|transferencia|comprobante|varios)$/i.test(val)) {
+          operationNumber = val;
+          transactionReference = val;
+          transactionNumber = val;
+          break;
+        }
+      }
     }
 
     // --- IDENTIFICAÇÃO DE ALIAS / CVU ---
@@ -248,14 +259,14 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     }
 
     // --- IDENTIFICAÇÃO DE NOMES ---
-    const destMatch = fullText.match(/(?:para|destinatario|destino|titular)[\s:]+([A-Za-zÁÉÍÓÚáéíóúñÑ\s]{3,35})/i);
+    const destMatch = fullText.match(/(?:para|destinatario|destino|titular)[\s:\n\r]+([A-Za-zÁÉÍÓÚáéíóúñÑ\s]{3,35})/i);
     if (destMatch && destMatch[1]) {
-      recipientName = destMatch[1].trim();
+      recipientName = destMatch[1].trim().replace(/\s+(alias|cbu|cvu|cuil|cuit)[\s\S]*/i, "").trim();
     }
 
-    const senderMatch = fullText.match(/(?:de|remitente|origen|ordenante)[\s:]+([A-Za-zÁÉÍÓÚáéíóúñÑ\s]{3,35})/i);
+    const senderMatch = fullText.match(/(?:origen|remitente|ordenante)[\s:\n\r]+([A-Za-zÁÉÍÓÚáéíóúñÑ\s]{3,35})/i);
     if (senderMatch && senderMatch[1]) {
-      senderName = senderMatch[1].trim();
+      senderName = senderMatch[1].trim().replace(/\s+(cbu|cvu|cuil|cuit)[\s\S]*/i, "").trim();
     }
 
     // Ajuste de confiança baseado na presença de campos críticos

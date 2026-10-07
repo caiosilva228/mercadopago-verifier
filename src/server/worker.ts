@@ -88,34 +88,69 @@ export class VerificationWorker {
 
       // Se existir relatório 'available' e não for o dia de hoje (ou gerado recentemente)
       if (existingReport && existingReport.status === "available" && existingReport.file_name_csv) {
-        const canReuse = !isToday || (existingReport.downloaded_at && (Date.now() - new Date(existingReport.downloaded_at).getTime()) < 10 * 60 * 1000);
+        // Verifica se há transações persistidas para esse relatório
+        const { count: txCount } = await supabase
+          .from("mercadopago_transactions")
+          .select("*", { count: "exact", head: true })
+          .eq("report_id", existingReport.id);
+
+        // Se tem transações e não é hoje, ou é hoje e foi baixado nos últimos 5 minutos
+        const downloadedAtMs = existingReport.downloaded_at ? new Date(existingReport.downloaded_at).getTime() : 0;
+        const isFresh = (Date.now() - downloadedAtMs) < 5 * 60 * 1000;
+        const canReuse = (txCount || 0) > 0 && (!isToday || isFresh);
         
         if (canReuse) {
           logger.info("Reutilizando relatório existente do cache", {
             reportId: existingReport.id,
             date: targetDateStr,
+            persistedTxs: txCount,
           });
           reportId = existingReport.id;
+        } else if ((txCount || 0) === 0 && !isToday && existingReport.file_name_csv) {
+          // Relatório disponível no MP mas sem transações salvas no banco: faz download e parse
+          try {
+            logger.info("Relatório em cache sem transações locais. Baixando e ingerindo CSV...", { reportId: existingReport.id });
+            const csv = await this.mpProvider.downloadReport(existingReport.file_name_csv);
+            const txs = await this.mpProvider.parseSettlementCsv(csv);
+            for (const tx of txs) {
+              await supabase.from("mercadopago_transactions").upsert({
+                report_id: existingReport.id,
+                source_id: tx.source_id,
+                pay_bank_transfer_id: tx.pay_bank_transfer_id,
+                external_reference: tx.external_reference,
+                transaction_type: tx.transaction_type,
+                transaction_amount_minor: Number(tx.transaction_amount_minor),
+                transaction_currency: tx.transaction_currency,
+                payment_method_type: tx.payment_method_type,
+                payment_method: tx.payment_method,
+                transaction_date: tx.transaction_date,
+                settlement_date: tx.settlement_date,
+                settlement_net_amount_minor: tx.settlement_net_amount_minor ? Number(tx.settlement_net_amount_minor) : null,
+                description: tx.description,
+                raw_row: tx.raw_row,
+              }, { onConflict: "source_id" });
+            }
+            reportId = existingReport.id;
+          } catch (dlErr) {
+            logger.warn("Falha ao recuperar transações de relatório em cache, gerará novo", { error: dlErr });
+          }
         }
       }
 
-      // Se precisar gerar ou aguardar novo relatório
-      if (!reportId) {
+      // Função auxiliar para gerar e baixar um relatório do Mercado Pago
+      const generateAndIngestReport = async (): Promise<string> => {
         let taskId: string;
 
-        // Verifica se há um relatório que já está em status 'pending' para essa data
         if (existingReport && existingReport.status === "pending" && existingReport.mercadopago_task_id) {
           taskId = existingReport.mercadopago_task_id;
           reportId = existingReport.id;
           logger.info("Continuando monitoramento de tarefa pendente existente", { taskId });
         } else {
-          // Solicita novo relatório para o dia local
           await this.updateJobStatus(jobId, "generating_report");
           const dateRangeUtc = getArgentinaDayUtcRange(targetDateStr);
           const task = await this.mpProvider.requestDailyReport(dateRangeUtc);
           taskId = String(task.id);
 
-          // Registra na tabela mercadopago_reports
           const { data: newReport, error: repInsertErr } = await supabase
             .from("mercadopago_reports")
             .insert({
@@ -135,15 +170,15 @@ export class VerificationWorker {
           reportId = newReport.id;
         }
 
-        // 4. Polling do relatório no Mercado Pago com timeout de 10 minutos
+        // Polling do relatório no Mercado Pago com timeout de 10 minutos
         await this.updateJobStatus(jobId, "waiting_report");
         const startTime = Date.now();
-        const maxWaitMs = 10 * 60 * 1000; // 10 minutos
+        const maxWaitMs = 10 * 60 * 1000;
         let isAvailable = false;
         let csvFileName: string | null = null;
 
         while (Date.now() - startTime < maxWaitMs) {
-          await new Promise((resolve) => setTimeout(resolve, 15000)); // Aguarda 15s
+          await new Promise((resolve) => setTimeout(resolve, 15000));
 
           const taskStatus = await this.mpProvider.getReportStatus(taskId);
           logger.info("Consulta de status do relatório Mercado Pago", {
@@ -164,7 +199,6 @@ export class VerificationWorker {
               break;
             }
           } else if (taskStatus.status === "failed" || taskStatus.status === "error") {
-
             throw new Error(`O Mercado Pago falhou ao gerar o relatório: status ${taskStatus.status}`);
           }
         }
@@ -173,11 +207,9 @@ export class VerificationWorker {
           throw new Error("O Mercado Pago demorou mais que o esperado para gerar o relatório. Tente novamente.");
         }
 
-        // 5. Download do relatório
         await this.updateJobStatus(jobId, "downloading_report");
         csvContent = await this.mpProvider.downloadReport(csvFileName);
 
-        // Atualiza status do relatório no banco
         await supabase
           .from("mercadopago_reports")
           .update({
@@ -186,16 +218,15 @@ export class VerificationWorker {
             available_at: new Date().toISOString(),
             downloaded_at: new Date().toISOString(),
           })
-          .eq("id", reportId);
+          .eq("id", reportId!);
 
-        // 6. Faz o parse do CSV e salva as transações no banco
         const parsedTxs = await this.mpProvider.parseSettlementCsv(csvContent);
         logger.info("Parsing do CSV concluído", { totalRows: parsedTxs.length });
 
         for (const tx of parsedTxs) {
-          await supabase.from("mercadopago_transactions").upsert(
+          const { error: txErr } = await supabase.from("mercadopago_transactions").upsert(
             {
-              report_id: reportId,
+              report_id: reportId!,
               source_id: tx.source_id,
               pay_bank_transfer_id: tx.pay_bank_transfer_id,
               external_reference: tx.external_reference,
@@ -212,45 +243,61 @@ export class VerificationWorker {
             },
             { onConflict: "source_id" }
           );
+          if (txErr) {
+            logger.error("Erro ao inserir transação do Mercado Pago", txErr, { sourceId: tx.source_id });
+          }
         }
+
+        return reportId!;
+      };
+
+      // Se precisar gerar ou aguardar novo relatório
+      if (!reportId) {
+        reportId = await generateAndIngestReport();
       }
 
       // 7. Carrega as transações disponíveis para a data
       await this.updateJobStatus(jobId, "matching");
 
-      const { data: dbTransactions, error: txErr } = await supabase
-        .from("mercadopago_transactions")
-        .select("*")
-        .eq("report_id", reportId);
+      const loadTransactions = async (): Promise<MercadoPagoTransaction[]> => {
+        const dateUtcRange = getArgentinaDayUtcRange(targetDateStr);
+        const { data: dbTransactions, error: txErr } = await supabase
+          .from("mercadopago_transactions")
+          .select("*")
+          .or(`report_id.eq.${reportId},and(transaction_date.gte.${dateUtcRange.beginDate},transaction_date.lte.${dateUtcRange.endDate})`);
 
-      if (txErr) {
-        throw new Error(`Falha ao ler transações do banco: ${txErr.message}`);
-      }
+        if (txErr) {
+          throw new Error(`Falha ao ler transações do banco: ${txErr.message}`);
+        }
 
-      const formattedTxs: MercadoPagoTransaction[] = (dbTransactions || []).map((t) => ({
-        id: t.id,
-        report_id: t.report_id,
-        source_id: t.source_id,
-        pay_bank_transfer_id: t.pay_bank_transfer_id,
-        external_reference: t.external_reference,
-        transaction_type: t.transaction_type,
-        transaction_amount_minor: BigInt(t.transaction_amount_minor),
-        transaction_amount_display: Number(t.transaction_amount_minor) / 100,
-        transaction_currency: t.transaction_currency,
-        payment_method_type: t.payment_method_type,
-        payment_method: t.payment_method,
-        transaction_date: t.transaction_date,
-        settlement_date: t.settlement_date,
-        settlement_net_amount_minor: t.settlement_net_amount_minor ? BigInt(t.settlement_net_amount_minor) : null,
-        description: t.description,
-        raw_row: t.raw_row,
-      }));
+        return (dbTransactions || []).map((t) => ({
+          id: t.id,
+          report_id: t.report_id,
+          source_id: t.source_id,
+          pay_bank_transfer_id: t.pay_bank_transfer_id,
+          external_reference: t.external_reference,
+          transaction_type: t.transaction_type,
+          transaction_amount_minor: BigInt(t.transaction_amount_minor),
+          transaction_amount_display: Number(t.transaction_amount_minor) / 100,
+          transaction_currency: t.transaction_currency,
+          payment_method_type: t.payment_method_type,
+          payment_method: t.payment_method,
+          transaction_date: t.transaction_date,
+          settlement_date: t.settlement_date,
+          settlement_net_amount_minor: t.settlement_net_amount_minor ? BigInt(t.settlement_net_amount_minor) : null,
+          description: t.description,
+          raw_row: t.raw_row,
+        }));
+      };
+
+      let formattedTxs = await loadTransactions();
 
       // 8. Busca SOURCE_IDs que já foram confirmados em outros comprovantes
       const { data: verifiedMatches } = await supabase
         .from("verification_matches")
         .select("transaction_id, mercadopago_transactions(source_id)")
-        .eq("status", "verified");
+        .eq("status", "verified")
+        .neq("receipt_id", receipt.id);
 
       const usedSourceIds = new Set<string>();
       if (verifiedMatches) {
@@ -263,7 +310,7 @@ export class VerificationWorker {
       }
 
       // 9. Executa o algoritmo de matching rigoroso
-      const matchResult = PaymentMatcher.match(
+      let matchResult = PaymentMatcher.match(
         {
           amount: Number(receipt.amount_display),
           currency: (receipt.currency || "ARS") as "ARS" | "BRL" | "USD",
@@ -276,9 +323,33 @@ export class VerificationWorker {
         formattedTxs
       );
 
-      // 10. Salva o resultado do match no banco
+      // Se for comprovante de hoje e não encontrou, tenta gerar um relatório mais recente do Mercado Pago
+      if (matchResult.status === "not_found" && isToday) {
+        logger.info("Comprovante de hoje não localizado no relatório atual. Solicitando novo relatório fresco do Mercado Pago...");
+        try {
+          reportId = await generateAndIngestReport();
+          formattedTxs = await loadTransactions();
+          matchResult = PaymentMatcher.match(
+            {
+              amount: Number(receipt.amount_display),
+              currency: (receipt.currency || "ARS") as "ARS" | "BRL" | "USD",
+              transactionDate: receipt.transaction_date,
+              transactionTime: receipt.transaction_time,
+              operationNumber: receipt.operation_number,
+              transactionReference: receipt.transaction_reference,
+              alreadyUsedSourceIds: usedSourceIds,
+            },
+            formattedTxs
+          );
+        } catch (freshErr) {
+          logger.warn("Tentativa de geração de relatório fresco do dia falhou, mantendo resultado", { error: freshErr });
+        }
+      }
+
+      // 10. Salva o resultado do match no banco (remove anteriores do mesmo receipt_id para evitar duplicações)
       const matchedTxId = matchResult.matchedTransaction?.id || null;
 
+      await supabase.from("verification_matches").delete().eq("receipt_id", receipt.id);
       await supabase.from("verification_matches").insert({
         receipt_id: receipt.id,
         transaction_id: matchedTxId,
