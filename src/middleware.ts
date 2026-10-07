@@ -44,6 +44,7 @@ export async function middleware(request: NextRequest) {
   // Rotas públicas liberadas
   if (
     pathname === "/login" ||
+    pathname.startsWith("/api/auth/") ||
     pathname.startsWith("/auth/callback") ||
     pathname === "/api/health" ||
     pathname.startsWith("/_next") ||
