@@ -91,12 +91,14 @@ export const MercadoPagoReportFileSchema = z.object({
 export type MercadoPagoReportFile = z.infer<typeof MercadoPagoReportFileSchema>;
 
 export const MercadoPagoReportTaskSchema = z.object({
-  id: z.number(),
-  status: z.enum(["pending", "available", "error", "failed", "processing"]),
+  id: z.union([z.number(), z.string()]).transform((val) => String(val)),
+  status: z.string(),
   format: z.string().optional(),
   currency_id: z.string().optional(),
+  file_name: z.string().optional(),
   files: z.array(MercadoPagoReportFileSchema).optional(),
 });
+
 
 export type MercadoPagoReportTask = z.infer<typeof MercadoPagoReportTaskSchema>;
 

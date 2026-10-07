@@ -152,14 +152,19 @@ export class VerificationWorker {
             files: taskStatus.files?.length,
           });
 
-          if (taskStatus.status === "available") {
+          if (taskStatus.status === "available" || taskStatus.status === "processed") {
             const csvFile = taskStatus.files?.find((f) => f.type === "csv" || f.name.endsWith(".csv"));
             if (csvFile) {
               csvFileName = csvFile.name;
               isAvailable = true;
               break;
+            } else if (taskStatus.file_name) {
+              csvFileName = taskStatus.file_name;
+              isAvailable = true;
+              break;
             }
           } else if (taskStatus.status === "failed" || taskStatus.status === "error") {
+
             throw new Error(`O Mercado Pago falhou ao gerar o relatório: status ${taskStatus.status}`);
           }
         }
