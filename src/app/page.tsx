@@ -194,12 +194,18 @@ export default function VerificationDashboard() {
     const formData = new FormData();
     formData.append("file", fileToUpload);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+
     try {
       setCurrentStepIndex(1); // Extraindo informações
       const res = await fetch("/api/upload", {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       const data = await res.json();
       if (!res.ok) {
@@ -210,30 +216,40 @@ export default function VerificationDashboard() {
         setDuplicateWarning("Este comprovante já foi enviado anteriormente. Exibindo dados existentes.");
       }
 
-      setReceiptId(data.receipt.id);
-      const extraction = data.extraction || data.receipt.extraction_json;
+      if (data.receipt) {
+        setReceiptId(data.receipt.id);
+      }
+      const extraction = data.extraction || data.receipt?.extraction_json;
       setExtractedData(extraction);
 
       // Preenche campos para conferência/edição
       setEditAmount(extraction?.amount ? String(extraction.amount) : "");
       setEditCurrency(extraction?.currency || "ARS");
-      setEditDate(extraction?.transactionDate || "");
+      setEditDate(extraction?.transactionDate || new Date().toISOString().split("T")[0]);
       setEditTime(extraction?.transactionTime || "");
       setEditBank(extraction?.bankName || "");
       setEditRef(extraction?.transactionReference || "");
 
-      setCurrentStepIndex(2); // Identificando pagamento
+      setCurrentStepIndex(2); // Identificando pagamento / conferência
       setShowEditForm(true);
-
-      // Se confiança for muito alta (> 90%) e tiver campos essenciais, pode auto-iniciar se desejar
-      // Mas oferecemos a conferência visual conforme requisito 7
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "Erro no upload.");
-      setCurrentStepIndex(0);
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      const isTimeout = err.name === "AbortError";
+      setErrorMsg(
+        isTimeout
+          ? "A extração automática demorou. Você pode preencher os dados do comprovante manualmente abaixo para verificar."
+          : (err instanceof Error ? err.message : "Erro no upload do comprovante.")
+      );
+      // Sempre abre o formulário de conferência para não travar o usuário
+      setEditDate(new Date().toISOString().split("T")[0]);
+      setEditCurrency("ARS");
+      setCurrentStepIndex(2);
+      setShowEditForm(true);
     } finally {
       setIsUploading(false);
     }
   };
+
 
   // Iniciar verificação no Mercado Pago
   const startVerification = async () => {

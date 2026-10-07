@@ -101,9 +101,36 @@ export async function POST(req: NextRequest) {
     // 6. Extração OCR e parsing dos campos do comprovante
     logger.info("Iniciando extração do comprovante", { filename: sanitizedName, size: file.size });
     const extractor = new DefaultReceiptTextExtractor();
-    const extraction = await extractor.extractFromBuffer(fileBuffer, file.type);
+    let extraction;
+    try {
+      const extractionPromise = extractor.extractFromBuffer(fileBuffer, file.type);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Timeout de extração de comprovante excedido")), 20000)
+      );
+      extraction = await Promise.race([extractionPromise, timeoutPromise]);
+    } catch (extErr: any) {
+      logger.warn("Extração automática falhou ou atingiu timeout, prosseguindo com campos para conferência", {
+        err: extErr.message,
+      });
+      extraction = {
+        amount: null,
+        currency: "ARS" as const,
+        transactionDate: new Date().toISOString().split("T")[0],
+        transactionTime: null,
+        bankName: null,
+        senderName: null,
+        recipientName: null,
+        destinationAlias: null,
+        transactionReference: null,
+        operationNumber: null,
+        transactionNumber: null,
+        rawText: "",
+        confidence: 0,
+      };
+    }
 
     const amountMinor = extraction.amount ? toMinorUnits(extraction.amount) : null;
+
 
     // 7. Salva o registro em mercadopago.receipts
     const { data: newReceipt, error: insertError } = await adminSupabase

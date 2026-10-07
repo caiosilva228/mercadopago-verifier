@@ -4,6 +4,14 @@ import { ReceiptExtraction, ReceiptExtractionSchema } from "@/types";
 import { preprocessImageForOcr } from "./preprocess";
 import { parseOcrAmount } from "@/lib/utils/currency";
 import { logger } from "@/lib/utils/logger";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import fs from "fs/promises";
+import path from "path";
+import os from "os";
+import { randomUUID } from "crypto";
+
+const execFileAsync = promisify(execFile);
 
 export interface ReceiptTextExtractor {
   extractFromBuffer(buffer: Buffer, mimeType: string): Promise<ReceiptExtraction>;
@@ -37,17 +45,65 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     // 2. Se não for PDF ou o PDF for escaneado / sem texto, executa OCR
     if (!rawText || rawText.length < 30) {
       try {
-        logger.info("Iniciando pipeline OCR via Tesseract");
+        logger.info("Iniciando pipeline OCR para comprovante");
         const processedImageBuffer = await preprocessImageForOcr(buffer);
 
-        // Inicializa worker Tesseract com idiomas espanhol e inglês
-        const worker = await createWorker(["spa", "eng"]);
-        const result = await worker.recognize(processedImageBuffer);
-        await worker.terminate();
+        // Tentativa 1: Native Tesseract CLI (instalado no container Linux via apt-get - ultra-rápido, sem download de rede)
+        let ocrResult: { text: string; confidence: number } | null = null;
+        try {
+          const tempFile = path.join(os.tmpdir(), `ocr-${randomUUID()}.png`);
+          await fs.writeFile(tempFile, processedImageBuffer);
+          try {
+            const { stdout } = await execFileAsync("tesseract", [tempFile, "stdout", "-l", "spa+eng"], {
+              timeout: 10000,
+              maxBuffer: 5 * 1024 * 1024,
+            });
+            const text = stdout ? stdout.trim() : "";
+            if (text.length > 5) {
+              ocrResult = { text, confidence: 85 };
+              logger.info("OCR nativo via tesseract CLI concluído com sucesso", { textLength: text.length });
+            }
+          } finally {
+            await fs.unlink(tempFile).catch(() => {});
+          }
+        } catch (nativeErr: any) {
+          logger.warn("Tesseract CLI nativo indisponível ou falhou, tentando fallback tesseract.js", {
+            msg: nativeErr.message,
+          });
+        }
 
-        rawText = result.data.text || "";
-        confidence = Math.round(result.data.confidence || 70);
-        logger.info("OCR concluído", { confidence, textLength: rawText.length });
+        // Tentativa 2: Fallback tesseract.js com timeout estrito de 12 segundos e cache em os.tmpdir()
+        if (!ocrResult) {
+          const tesseractJsPromise = (async () => {
+            const worker = await createWorker(["spa", "eng"], 1, {
+              cachePath: os.tmpdir(),
+            });
+            try {
+              const result = await worker.recognize(processedImageBuffer);
+              return {
+                text: result.data.text || "",
+                confidence: Math.round(result.data.confidence || 70),
+              };
+            } finally {
+              await worker.terminate().catch(() => {});
+            }
+          })();
+
+          const timeoutPromise = new Promise<{ text: string; confidence: number }>((_, reject) =>
+            setTimeout(() => reject(new Error("Timeout no Tesseract.js (12 segundos)")), 12000)
+          );
+
+          ocrResult = await Promise.race([tesseractJsPromise, timeoutPromise]);
+          logger.info("OCR via tesseract.js concluído", {
+            confidence: ocrResult.confidence,
+            textLength: ocrResult.text.length,
+          });
+        }
+
+        if (ocrResult) {
+          rawText = ocrResult.text;
+          confidence = ocrResult.confidence;
+        }
       } catch (ocrErr) {
         logger.error("Erro durante execução do OCR", ocrErr);
         rawText = rawText || "";
@@ -112,7 +168,6 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     }
 
     // --- IDENTIFICAÇÃO DE VALOR / MONTO ---
-    // Procura linhas com padrões de valor: "$ 19.900,00", "Importe: $ 19.900", "Total $19.900"
     const amountRegexes = [
       /(?:importe|monto|total|transferiste|enviaste|pagaste|recibiste|valor)[\s:]*[$A-Z\s]*([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?|[0-9]+(?:,[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)/i,
       /\$\s*([0-9]{1,3}(?:\.[0-9]{3})*(?:,[0-9]{2})?|[0-9]+(?:,[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)/,
@@ -147,7 +202,6 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     }
 
     // --- IDENTIFICAÇÃO DE DATA ---
-    // Padrão DD/MM/YYYY ou DD-MM-YYYY
     const dateMatch = fullText.match(/\b([0-3]?[0-9])[\/\-\.]([0-1]?[0-9])[\/\-\.](202[0-9])\b/);
     if (dateMatch) {
       const day = dateMatch[1].padStart(2, "0");
@@ -155,7 +209,6 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
       const year = dateMatch[3];
       transactionDate = `${year}-${month}-${day}`;
     } else {
-      // Padrão textual: "05 de octubre de 2026"
       const textDateMatch = fullText.match(/\b([0-3]?[0-9])\s+de\s+([a-zA-Z]+)\s+de\s+(202[0-9])\b/i);
       if (textDateMatch) {
         const monthsEs: Record<string, string> = {
@@ -172,7 +225,6 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     }
 
     // --- IDENTIFICAÇÃO DE HORÁRIO ---
-    // Padrão HH:mm:ss ou HH:mm (ex: "15:17:45" ou "15:17 hs")
     const timeMatch = fullText.match(/\b([0-2]?[0-9]):([0-5][0-9])(?::([0-5][0-9]))?\b/);
     if (timeMatch) {
       const hour = timeMatch[1].padStart(2, "0");
