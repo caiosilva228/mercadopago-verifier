@@ -1,12 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { ShieldCheck, Lock, Mail, ArrowRight, Loader2, AlertCircle } from "lucide-react";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -18,24 +15,28 @@ export default function LoginPage() {
     setErrorMsg(null);
 
     try {
-      const supabase = createClient();
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, password }),
       });
 
-      if (error) {
-        setErrorMsg(error.message === "Invalid login credentials"
-          ? "E-mail ou senha incorretos."
-          : error.message);
+      const data = await res.json();
+
+      if (!res.ok) {
+        setErrorMsg(data.error || "E-mail ou senha incorretos.");
         setLoading(false);
         return;
       }
 
-      router.push("/");
-      router.refresh();
-    } catch (err) {
-      setErrorMsg("Erro ao conectar com o serviço de autenticação.");
+      // Redireciona com recarga para enviar os cookies recém-gravados
+      const searchParams = new URLSearchParams(window.location.search);
+      const redirectUrl = searchParams.get("redirect") || "/";
+      window.location.href = redirectUrl;
+    } catch {
+      setErrorMsg("Erro de comunicação com o servidor.");
       setLoading(false);
     }
   };
@@ -104,7 +105,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3.5 px-4 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-semibold rounded-xl text-sm shadow-lg shadow-sky-500/25 flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-2 group"
+            className="w-full py-3.5 px-4 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-semibold rounded-xl text-sm shadow-lg shadow-sky-500/25 flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-2 group cursor-pointer"
           >
             {loading ? (
               <>
