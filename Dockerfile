@@ -18,7 +18,7 @@ WORKDIR /app
 # ==========================================
 FROM base AS deps
 COPY package.json ./
-RUN npm install --legacy-peer-deps
+RUN npm install --include=dev --legacy-peer-deps
 
 # ==========================================
 # 3. Build da Aplicação

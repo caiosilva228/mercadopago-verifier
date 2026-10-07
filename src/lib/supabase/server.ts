@@ -1,4 +1,4 @@
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { cookies } from "next/headers";
 
 export async function createServerSupabaseClient() {
@@ -11,9 +11,7 @@ export async function createServerSupabaseClient() {
   let supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || defaultAnonKey;
   if (supabaseAnonKey.includes("placeholder") || supabaseAnonKey.length < 20) supabaseAnonKey = defaultAnonKey;
 
-  if (!supabaseUrl || !supabaseAnonKey) {
-    throw new Error("Variáveis de ambiente do Supabase não configuradas no servidor.");
-  }
+  const cookieStore = cookies();
 
   return createServerClient(supabaseUrl, supabaseAnonKey, {
     db: {
@@ -23,10 +21,10 @@ export async function createServerSupabaseClient() {
       getAll() {
         return cookieStore.getAll();
       },
-      setAll(cookiesToSet: Array<{ name: string; value: string; options?: any }>) {
+      setAll(cookiesToSet: Array<{ name: string; value: string; options?: CookieOptions }>) {
         try {
           cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)
+            cookieStore.set({ name, value, ...options })
           );
         } catch {
           // Chamado de Server Components, cookies só podem ser setados em Server Actions ou Route Handlers
@@ -35,3 +33,4 @@ export async function createServerSupabaseClient() {
     },
   });
 }
+
