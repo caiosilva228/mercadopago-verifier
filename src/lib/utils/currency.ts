@@ -4,24 +4,58 @@
  */
 
 export function toMinorUnits(amount: number | string): bigint {
-  const numStr = typeof amount === "number" ? amount.toFixed(2) : amount.trim();
-  // Remove pontos de milhar se houver e normaliza vírgula para ponto
-  const cleanStr = numStr.replace(/\s+/g, "").replace(/\./g, "").replace(",", ".");
-  
-  // Trata números decimais diretos ex: "19900.00"
-  const parsed = Number(cleanStr);
+  if (typeof amount === "number") {
+    if (isNaN(amount) || !isFinite(amount)) throw new Error(`Número inválido: ${amount}`);
+    return BigInt(Math.round(amount * 100));
+  }
+
+  const str = amount.trim();
+  if (!str) throw new Error("Valor monetário vazio");
+
+  const isNegative = str.startsWith("-");
+  let clean = str.replace(/^-/, "").trim();
+
+  const lastDot = clean.lastIndexOf(".");
+  const lastComma = clean.lastIndexOf(",");
+
+  if (lastDot > -1 && lastComma > -1) {
+    if (lastComma > lastDot) {
+      clean = clean.replace(/\./g, "").replace(",", ".");
+    } else {
+      clean = clean.replace(/,/g, "");
+    }
+  } else if (lastComma > -1) {
+    const parts = clean.split(",");
+    if (parts.length === 2 && parts[1].length <= 2) {
+      clean = `${parts[0]}.${parts[1]}`;
+    } else {
+      clean = clean.replace(/,/g, "");
+    }
+  } else if (lastDot > -1) {
+    const parts = clean.split(".");
+    if (parts.length === 2 && parts[1].length > 2) {
+      if (parts[1].length === 3) {
+        clean = clean.replace(/\./g, "");
+      }
+    } else if (parts.length > 2) {
+      clean = clean.replace(/\./g, "");
+    }
+  }
+
+  const parsed = Number(clean);
   if (isNaN(parsed)) {
     throw new Error(`Valor monetário inválido: ${amount}`);
   }
 
-  // Multiplicação por 100 com Math.round para evitar imprecisões binárias de float
-  return BigInt(Math.round(parsed * 100));
+  const cents = BigInt(Math.round(parsed * 100));
+  return isNegative ? -cents : cents;
 }
 
 export function fromMinorUnits(minorUnits: bigint | number): number {
   const val = typeof minorUnits === "bigint" ? Number(minorUnits) : minorUnits;
   return Number((val / 100).toFixed(2));
 }
+
 
 export function formatCurrencyDisplay(amount: number, currency: string = "ARS"): string {
   const symbol = currency === "USD" ? "US$" : currency === "BRL" ? "R$" : "$";

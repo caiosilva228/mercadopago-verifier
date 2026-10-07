@@ -20,8 +20,10 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { formatCurrencyDisplay } from "@/lib/utils/currency";
+import { BalanceCard } from "@/components/BalanceCard";
 
 interface ExtractedData {
+
   amount: number | null;
   currency: "ARS" | "BRL" | "USD" | null;
   transactionDate: string | null;
@@ -287,9 +289,13 @@ export default function VerificationDashboard() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-8">
+      {/* Card de Saldo do Mercado Pago (Release Report) */}
+      <BalanceCard allowForce={true} />
+
       {/* Título Principal */}
-      <div className="text-center space-y-2">
+      <div className="text-center space-y-2 pt-2">
         <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight text-white">
+
           Verificar Pagamento
         </h1>
         <p className="text-slate-400 text-sm max-w-lg mx-auto">

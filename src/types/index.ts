@@ -57,19 +57,27 @@ export const JobStatusEnum = z.enum([
   "extracting",
   "extracted",
   "queued",
+  "checking_config",
+  "requesting_report",
   "checking_report",
   "generating_report",
   "waiting_report",
+  "downloading",
   "downloading_report",
+  "parsing",
   "matching",
   "verified",
   "ambiguous",
   "not_found",
   "manual_review",
+  "completed",
   "error",
 ]);
 
 export type JobStatus = z.infer<typeof JobStatusEnum>;
+
+export type JobType = "verify_receipt" | "refresh_balance";
+
 
 // ==========================================
 // 3. INTEGRAÇÃO MERCADO PAGO
@@ -168,3 +176,44 @@ export interface PaymentVerificationProvider {
   downloadReport(fileName: string): Promise<string>;
   parseSettlementCsv(csvContent: string): Promise<Omit<MercadoPagoTransaction, "id" | "report_id">[]>;
 }
+
+// ==========================================
+// 5. SALDO & RELEASE REPORT DO MERCADO PAGO
+// ==========================================
+
+export const BalanceStatusEnum = z.enum(["reliable", "manual_review"]);
+export type BalanceStatus = z.infer<typeof BalanceStatusEnum>;
+
+export interface MercadoPagoBalanceResult {
+  currency: "ARS";
+  initialBalanceMinor: bigint | null;
+  totalCreditsMinor: bigint;
+  totalDebitsMinor: bigint;
+  calculatedBalanceMinor: bigint;
+  totalBalanceMinor: bigint;
+  reportTaskId: string;
+  reportFileName: string;
+  reportDate: string;
+  generatedAt: string;
+  status: BalanceStatus;
+  isConsistent: boolean;
+  divergenceReason?: string;
+  rawSummary: Record<string, unknown>;
+}
+
+export interface BalanceSnapshot {
+  id: string;
+  currency: "ARS";
+  initial_balance_minor: bigint | null;
+  credits_minor: bigint;
+  debits_minor: bigint;
+  balance_minor: bigint;
+  mercadopago_task_id: string | null;
+  report_file_name: string | null;
+  report_date: string | null;
+  status: BalanceStatus;
+  raw_summary: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+

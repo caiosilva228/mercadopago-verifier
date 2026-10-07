@@ -12,6 +12,7 @@ import { logger } from "@/lib/utils/logger";
 export class MercadoPagoProvider implements PaymentVerificationProvider {
   private readonly baseUrl = "https://api.mercadopago.com";
 
+
   private getAccessToken(): string {
     const token = process.env.MERCADOPAGO_ACCESS_TOKEN;
     if (!token) {
@@ -267,3 +268,5 @@ export class MercadoPagoProvider implements PaymentVerificationProvider {
     return transactions;
   }
 }
+
+export const MercadoPagoAccountMoneyService = MercadoPagoProvider;

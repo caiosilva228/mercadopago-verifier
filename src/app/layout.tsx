@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import Link from "next/link";
-import { CheckCircle2, History, LogOut, ShieldCheck } from "lucide-react";
+import { CheckCircle2, History, LogOut, ShieldCheck, Wallet } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "Verificador de Transferências Mercado Pago",
@@ -42,12 +42,20 @@ export default function RootLayout({
                 <span>Verificar</span>
               </Link>
               <Link
+                href="/saldo"
+                className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800/80 transition-colors"
+              >
+                <Wallet className="w-4 h-4 text-emerald-400" />
+                <span>Saldo</span>
+              </Link>
+              <Link
                 href="/historico"
                 className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-800/80 transition-colors"
               >
                 <History className="w-4 h-4 text-slate-400" />
                 <span>Histórico</span>
               </Link>
+
 
               {/* Botão Logout */}
               <form action="/api/auth/signout" method="POST">

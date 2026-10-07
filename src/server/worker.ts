@@ -1,5 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { MercadoPagoProvider } from "@/lib/mercadopago/provider";
+import { MercadoPagoReleaseReportService } from "@/lib/mercadopago/release-report";
+import { MercadoPagoBalanceParser } from "@/lib/mercadopago/balance-parser";
 import { PaymentMatcher } from "@/lib/mercadopago/matcher";
 import { getArgentinaDayUtcRange } from "@/lib/utils/timezone";
 import { logger } from "@/lib/utils/logger";
@@ -8,27 +10,47 @@ import { MercadoPagoTransaction } from "@/types";
 
 export class VerificationWorker {
   private readonly mpProvider: MercadoPagoProvider;
+  private readonly releaseReportService: MercadoPagoReleaseReportService;
   private isRunning: boolean = false;
 
   constructor() {
     this.mpProvider = new MercadoPagoProvider();
+    this.releaseReportService = new MercadoPagoReleaseReportService();
   }
 
+
   /**
-   * Processa um job de verificação específico de ponta a ponta
+   * Processa um job de verificação ou atualização de saldo de acordo com o job_type
    */
   async processJob(jobId: string): Promise<void> {
     const supabase = createAdminClient();
 
-    // 1. Busca o job e os dados do comprovante
     const { data: job, error: jobErr } = await supabase
       .from("verification_jobs")
       .select("*, receipts(*)")
       .eq("id", jobId)
       .single();
 
-    if (jobErr || !job || !job.receipts) {
-      logger.error("Job de verificação não encontrado", jobErr, { jobId });
+    if (jobErr || !job) {
+      logger.error("Job não encontrado no banco de dados", jobErr, { jobId });
+      return;
+    }
+
+    if (job.job_type === "refresh_balance") {
+      return await this.processBalanceJob(jobId, job);
+    }
+
+    return await this.processVerificationJob(jobId, job);
+  }
+
+  /**
+   * Processa um job de verificação específico de ponta a ponta
+   */
+  async processVerificationJob(jobId: string, job: any): Promise<void> {
+    const supabase = createAdminClient();
+
+    if (!job || !job.receipts) {
+      logger.error("Job de verificação não possui comprovante associado", null, { jobId });
       return;
     }
 
@@ -38,6 +60,7 @@ export class VerificationWorker {
     if (!targetDateStr) {
       await this.updateJobStatus(jobId, "error", {
         errorCode: "MISSING_DATE",
+
         errorMessage: "Data do comprovante não informada.",
       });
       return;
@@ -296,8 +319,146 @@ export class VerificationWorker {
   }
 
   /**
+   * 55. WORKER DE SALDO
+   * Processa atualização de saldo via Release Report:
+   * queued -> checking_config -> requesting_report -> waiting_report -> downloading -> parsing -> completed (ou error)
+   */
+  async processBalanceJob(jobId: string, job: any): Promise<void> {
+    const supabase = createAdminClient();
+
+    try {
+      // 1. checking_config
+      await this.updateJobStatus(jobId, "checking_config");
+      await this.releaseReportService.ensureMercadoPagoReleaseReportConfiguration();
+
+      // 2. requesting_report
+      await this.updateJobStatus(jobId, "requesting_report");
+      const reportTask = await this.releaseReportService.createReleaseReport();
+      const taskId = String(reportTask.id);
+
+      // Auditoria: balance_report_created
+      await supabase.from("audit_logs").insert({
+        event_type: "balance_report_created",
+        entity_type: "balance",
+        entity_id: null,
+        metadata: { jobId, taskId },
+      });
+
+      // 3. waiting_report - Polling assíncrono (a cada 15s, timeout de 10 minutos)
+      await this.updateJobStatus(jobId, "waiting_report");
+
+      const maxAttempts = 40; // 40 * 15s = 600s = 10 minutos
+      const intervalMs = 15000;
+      let fileName: string | null = null;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        logger.info(`Consultando status do Release Report task ${taskId} (tentativa ${attempt}/${maxAttempts})...`);
+        const taskStatus = await this.releaseReportService.getReleaseReportTask(taskId);
+
+        if (taskStatus.status === "processed" && taskStatus.file_name) {
+          fileName = taskStatus.file_name;
+          logger.info("Release Report processado com sucesso pelo Mercado Pago!", { taskId, fileName });
+          break;
+        }
+
+        if (taskStatus.status === "error" || taskStatus.status === "failed") {
+          throw new Error(`Falha no processamento do relatório pelo Mercado Pago (status=${taskStatus.status})`);
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+
+      if (!fileName) {
+        throw new Error("Timeout ao aguardar processamento do Release Report no Mercado Pago (10 minutos excedidos).");
+      }
+
+      // Auditoria: balance_report_processed
+      await supabase.from("audit_logs").insert({
+        event_type: "balance_report_processed",
+        entity_type: "balance",
+        entity_id: null,
+        metadata: { jobId, taskId, fileName },
+      });
+
+      // 4. downloading
+      await this.updateJobStatus(jobId, "downloading");
+      const csvContent = await this.releaseReportService.downloadReleaseReportCsv(fileName);
+
+      // 5. parsing
+      await this.updateJobStatus(jobId, "parsing");
+      const balanceResult = MercadoPagoBalanceParser.parse(csvContent, {
+        taskId,
+        fileName,
+      });
+
+      // 6. Salva snapshot no banco (52. BANCO DE DADOS PARA SALDO)
+      const { data: snapshot, error: snapErr } = await supabase
+        .from("mercadopago_balance_snapshots")
+        .insert({
+          currency: balanceResult.currency,
+          initial_balance_minor: balanceResult.initialBalanceMinor,
+          credits_minor: balanceResult.totalCreditsMinor,
+          debits_minor: balanceResult.totalDebitsMinor,
+          balance_minor: balanceResult.totalBalanceMinor,
+          mercadopago_task_id: taskId,
+          report_file_name: fileName,
+          report_date: balanceResult.reportDate,
+          status: balanceResult.status,
+          raw_summary: balanceResult.rawSummary,
+        })
+        .select("*")
+        .single();
+
+      if (snapErr) {
+        logger.error("Erro ao salvar snapshot de saldo no banco", snapErr);
+      }
+
+      // Auditoria: balance_updated
+      await supabase.from("audit_logs").insert({
+        event_type: "balance_updated",
+        entity_type: "balance",
+        entity_id: snapshot ? snapshot.id : null,
+        metadata: {
+          currency: balanceResult.currency,
+          balanceMinor: Number(balanceResult.totalBalanceMinor),
+          status: balanceResult.status,
+          isConsistent: balanceResult.isConsistent,
+          divergenceReason: balanceResult.divergenceReason,
+        },
+      });
+
+      // 7. completed
+      await this.updateJobStatus(jobId, "completed", {
+        finishedAt: new Date().toISOString(),
+      });
+
+      logger.info("Atualização de saldo Mercado Pago concluída com sucesso!", {
+        balanceMinor: balanceResult.totalBalanceMinor.toString(),
+        status: balanceResult.status,
+      });
+    } catch (err: any) {
+      logger.error("Erro ao executar refresh_balance no worker", err, { jobId });
+
+      // Auditoria: balance_refresh_failed
+      await supabase.from("audit_logs").insert({
+        event_type: "balance_refresh_failed",
+        entity_type: "balance",
+        entity_id: null,
+        metadata: { jobId, error: err.message },
+      });
+
+      await this.updateJobStatus(jobId, "error", {
+        errorCode: "BALANCE_REFRESH_ERROR",
+        errorMessage: err.message || String(err),
+        finishedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  /**
    * Atualiza o status de um job de forma atômica
    */
+
   private async updateJobStatus(
     jobId: string,
     status: string,
