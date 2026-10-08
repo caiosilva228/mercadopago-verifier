@@ -36,6 +36,85 @@ export class PaymentMatcher {
 
     const notes: string[] = [];
 
+    // 0. VERIFICAÇÃO PRIORITÁRIA POR NÚMERO DE OPERAÇÃO / REFERÊNCIA
+    const cleanOp = (input.operationNumber || input.transactionReference)?.replace(/\D/g, "");
+    if (cleanOp && cleanOp.length >= 6) {
+      const exactOpMatch = transactions.find((tx) => {
+        const sId = (tx.source_id || "").replace(/\D/g, "");
+        const bId = (tx.pay_bank_transfer_id || "").replace(/\D/g, "");
+        const eRef = (tx.external_reference || "").replace(/\D/g, "");
+        return sId === cleanOp || bId === cleanOp || eRef === cleanOp;
+      });
+
+      if (exactOpMatch) {
+        const isAmtMatch = exactOpMatch.transaction_amount_minor === targetAmountMinor;
+        const isCurrMatch = exactOpMatch.transaction_currency.toUpperCase() === targetCurrency;
+        const isDuplicate = usedSourceIds.has(exactOpMatch.source_id);
+
+        let diffSeconds: number | null = null;
+        if (input.transactionTime) {
+          const receiptDateTimeUtc = parseArgentinaDateTimeToUtc(
+            input.transactionDate,
+            input.transactionTime
+          );
+          const txDateTimeUtc = DateTime.fromISO(exactOpMatch.transaction_date);
+          diffSeconds = getTimeDifferenceInSeconds(receiptDateTimeUtc, txDateTimeUtc);
+        }
+
+        if (isAmtMatch && isCurrMatch) {
+          if (isDuplicate) {
+            return {
+              status: "manual_review",
+              confidenceScore: 40,
+              matchedTransaction: exactOpMatch,
+              candidateTransactions: [exactOpMatch],
+              timeDifferenceSeconds: diffSeconds,
+              matchReasons: {
+                amountExact: true,
+                currencyExact: true,
+                transactionTypeCorrect: true,
+                paymentMethodCorrect: true,
+                sameLocalDate: true,
+                timeDifferenceSeconds: diffSeconds,
+                timeProximityScore: 30,
+                candidateCount: 1,
+                uniqueCandidate: true,
+                isDuplicateSourceId: true,
+                notes: [
+                  `ALERTA: O número de operação (${cleanOp}) já foi associado a outro comprovante anteriormente.`,
+                ],
+              },
+              message: "Esta operação já foi associada a outro comprovante anteriormente. Verificação suspensa para análise manual.",
+            };
+          }
+
+          return {
+            status: "verified",
+            confidenceScore: 100,
+            matchedTransaction: exactOpMatch,
+            candidateTransactions: [exactOpMatch],
+            timeDifferenceSeconds: diffSeconds,
+            matchReasons: {
+              amountExact: true,
+              currencyExact: true,
+              transactionTypeCorrect: true,
+              paymentMethodCorrect: true,
+              sameLocalDate: true,
+              timeDifferenceSeconds: diffSeconds,
+              timeProximityScore: 30,
+              candidateCount: 1,
+              uniqueCandidate: true,
+              isDuplicateSourceId: false,
+              notes: [
+                `Correspondência EXATA confirmada pelo Número de Operação do Mercado Pago (${exactOpMatch.source_id}).`,
+              ],
+            },
+            message: `Transferência confirmada com sucesso pelo número de operação ${exactOpMatch.source_id}.`,
+          };
+        }
+      }
+    }
+
     // 1. Filtragem obrigatória estrita
     const eligibleTransactions = transactions.filter((tx) => {
       // Regra 1: Tipo de transação deve ser SETTLEMENT
@@ -81,7 +160,11 @@ export class PaymentMatcher {
         candidateCount: 0,
         uniqueCandidate: false,
         isDuplicateSourceId: false,
-        notes: ["Nenhuma movimentação com valor e método correspondentes foi localizada para a data."],
+        notes: [
+          cleanOp
+            ? `Nenhuma movimentação com valor correspondente ou com a operação ${cleanOp} foi localizada na data.`
+            : "Nenhuma movimentação com valor e método correspondentes foi localizada para a data.",
+        ],
       };
 
       return {
@@ -182,17 +265,23 @@ export class PaymentMatcher {
         candidateCount: scoredCandidates.length,
         uniqueCandidate: false,
         isDuplicateSourceId: closest.isDuplicate,
-        notes: [`Diferença de horário excessiva (${Math.round(closest.diffSeconds / 60)} min). Não confirmado automaticamente.`],
+        notes: [
+          cleanOp
+            ? `A operação ${cleanOp} ainda não consta no relatório do Mercado Pago. Foi encontrada outra movimentação do mesmo valor com horário distante (${Math.round(closest.diffSeconds / 60)} min).`
+            : `Diferença de horário excessiva (${Math.round(closest.diffSeconds / 60)} min). Não confirmado automaticamente.`,
+        ],
       };
 
       return {
         status: "manual_review",
-        confidenceScore: 35,
+        confidenceScore: 25,
         matchedTransaction: null,
         candidateTransactions: scoredCandidates.map((c) => c.tx),
         timeDifferenceSeconds: closest.diffSeconds,
         matchReasons,
-        message: "Encontrada transferência com mesmo valor na data, porém com diferença de horário superior a 30 minutos. Requer conferência manual.",
+        message: cleanOp
+          ? `A operação ${cleanOp} indicada no comprovante ainda não foi localizada no relatório mais recente do Mercado Pago. Aguarde a sincronização ou revise manualmente.`
+          : "Encontrada transferência com mesmo valor na data, porém com diferença de horário superior a 30 minutos. Requer conferência manual.",
       };
     }
 

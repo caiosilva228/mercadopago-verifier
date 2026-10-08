@@ -252,21 +252,93 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
       }
     }
 
-    // --- IDENTIFICAÇÃO DE ALIAS / CVU ---
-    const aliasMatch = fullText.match(/(?:alias|cvu|cbu)[\s:]*([a-zA-Z0-9\.\-_]{6,26})/i);
-    if (aliasMatch && aliasMatch[1]) {
-      destinationAlias = aliasMatch[1];
+    // --- REMOÇÃO DE RODAPÉ PUBLICITÁRIO DO MERCADO PAGO ---
+    // Remove seções promocionais que possam contaminar a extração (ex: "Transferí $ 3,00 para Alejandra +")
+    const cleanFullText = fullText
+      .replace(/(?:Hac[eé]\s+pagos|Descarg[aá]\s+la\s+app|Transfer[ií]\s+\$)[\s\S]*/i, "")
+      .trim();
+
+    // --- IDENTIFICAÇÃO DE ALIAS / CVU & NOMES ESTRUTURADOS (MERCADO PAGO) ---
+    // Em comprovantes do Mercado Pago ("Origen y destino"):
+    // A primeira pessoa é a origem (remitente) e a segunda é o destino (destinatário).
+    const origenDestinoMatch = cleanFullText.match(/Origen\s+y\s+destino([\s\S]*?)(?:N[.°\s]*de\s+operaci[oó]n|Motivo|Hac[eé]|$)/i);
+    if (origenDestinoMatch) {
+      const section = origenDestinoMatch[1];
+      const cvus: string[] = [];
+      const cvuRegex = /(?:CVU|CBU):\s*([0-9]{15,26})/gi;
+      let cMatch;
+      while ((cMatch = cvuRegex.exec(section)) !== null) {
+        cvus.push(cMatch[1]);
+      }
+
+      const rawLines = section.split("\n").map((l) => l.trim()).filter(Boolean);
+      const extractedPeople: string[] = [];
+      for (let i = 0; i < rawLines.length; i++) {
+        const line = rawLines[i];
+        // Remove artefatos de bullets/ícones OCR como <S, <s, *, -, •, etc.
+        const cleaned = line.replace(/^(?:<S|<s|<|\*\s*|\•\s*|\-\s*|S\s+|s\s+|[0-9\s])+/, "").trim();
+        if (
+          cleaned.length >= 3 &&
+          !/^(Mercado\s*Pago|CVU|CBU|CUIT|CUIL|Origen|Destino|Varios|Motivo)/i.test(cleaned) &&
+          !/^[0-9\-\.\/\s]+$/.test(cleaned)
+        ) {
+          const nextLine = rawLines[i + 1] || "";
+          if (/^(Mercado\s*Pago|CVU|CBU|CUIT|CUIL|Banco)/i.test(nextLine) || cvus.length > 0) {
+            extractedPeople.push(cleaned);
+          }
+        }
+      }
+
+      if (extractedPeople.length >= 2) {
+        senderName = extractedPeople[0];
+        recipientName = extractedPeople[1];
+      } else if (extractedPeople.length === 1) {
+        recipientName = extractedPeople[0];
+      }
+
+      if (cvus.length >= 2) {
+        destinationAlias = cvus[1]; // Segundo CVU é o destinatário
+      } else if (cvus.length === 1 && !destinationAlias) {
+        destinationAlias = cvus[0];
+      }
     }
 
-    // --- IDENTIFICAÇÃO DE NOMES ---
-    const destMatch = fullText.match(/(?:para|destinatario|destino|titular)[\s:\n\r]+([A-Za-zÁÉÍÓÚáéíóúñÑ\s]{3,35})/i);
-    if (destMatch && destMatch[1]) {
-      recipientName = destMatch[1].trim().replace(/\s+(alias|cbu|cvu|cuil|cuit)[\s\S]*/i, "").trim();
+    // --- IDENTIFICAÇÃO DE ALIAS / CVU (Fallback para outros bancos) ---
+    if (!destinationAlias) {
+      const aliasMatch = cleanFullText.match(/(?:alias|cvu|cbu)[\s:]*([a-zA-Z0-9\.\-_]{6,26})/i);
+      if (aliasMatch && aliasMatch[1]) {
+        destinationAlias = aliasMatch[1];
+      }
     }
 
-    const senderMatch = fullText.match(/(?:origen|remitente|ordenante)[\s:\n\r]+([A-Za-zÁÉÍÓÚáéíóúñÑ\s]{3,35})/i);
-    if (senderMatch && senderMatch[1]) {
-      senderName = senderMatch[1].trim().replace(/\s+(cbu|cvu|cuil|cuit)[\s\S]*/i, "").trim();
+    // --- IDENTIFICAÇÃO DE NOMES (Fallback para outros bancos) ---
+    if (!recipientName) {
+      const destMatch = cleanFullText.match(/(?:para|destinatario|destino|titular|beneficiario)[\s:\n\r]+([A-Za-zÁÉÍÓÚáéíóúñÑ\s]{3,35})/i);
+      if (destMatch && destMatch[1]) {
+        const val = destMatch[1].trim().replace(/\s+(alias|cbu|cvu|cuil|cuit)[\s\S]*/i, "").trim();
+        if (!/^Alejandra$/i.test(val) && val.length >= 3) {
+          recipientName = val;
+        }
+      }
+    }
+
+    if (!senderName) {
+      // Ignora "Origen y destino" para não capturar "y destino"
+      const senderMatch = cleanFullText.match(/(?:remitente|ordenante|de\s*:)[\s:\n\r]+([A-Za-zÁÉÍÓÚáéíóúñÑ\s]{3,35})/i);
+      if (senderMatch && senderMatch[1]) {
+        const val = senderMatch[1].trim().replace(/\s+(cbu|cvu|cuil|cuit)[\s\S]*/i, "").trim();
+        if (!/^y\s+destino/i.test(val) && val.length >= 3) {
+          senderName = val;
+        }
+      }
+    }
+
+    // Limpeza de segurança final para evitar falsos positivos
+    if (senderName && /^y\s+destino/i.test(senderName)) {
+      senderName = null;
+    }
+    if (recipientName && /^Alejandra$/i.test(recipientName) && !cleanFullText.includes("Alejandra")) {
+      recipientName = null;
     }
 
     // Ajuste de confiança baseado na presença de campos críticos

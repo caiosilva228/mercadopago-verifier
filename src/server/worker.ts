@@ -323,9 +323,16 @@ export class VerificationWorker {
         formattedTxs
       );
 
-      // Se for comprovante de hoje e não encontrou, tenta gerar um relatório mais recente do Mercado Pago
-      if (matchResult.status === "not_found" && isToday) {
-        logger.info("Comprovante de hoje não localizado no relatório atual. Solicitando novo relatório fresco do Mercado Pago...");
+      // Se for comprovante de hoje e não encontrou correspondência precisa (not_found ou horário muito distante > 30min), solicita relatório fresco
+      const isMissingOrStale =
+        matchResult.status === "not_found" ||
+        (matchResult.status === "manual_review" &&
+          (matchResult.timeDifferenceSeconds === null || matchResult.timeDifferenceSeconds > 1800));
+
+      if (isMissingOrStale && isToday) {
+        logger.info(
+          `Comprovante de hoje sem correspondência precisa (status: ${matchResult.status}, diff: ${matchResult.timeDifferenceSeconds}s). Solicitando novo relatório fresco do Mercado Pago...`
+        );
         try {
           reportId = await generateAndIngestReport();
           formattedTxs = await loadTransactions();
