@@ -214,14 +214,18 @@ export class MercadoPagoReleaseReportService {
 
       if (response.ok) {
         const data = await response.json();
-        return {
-          id: data.id,
-          status: data.status === "enabled" ? "processed" : data.status,
-          currency_id: data.currency_id,
-          file_name: data.file_name,
-        };
+        if (data.file_name) {
+          return {
+            id: data.id,
+            status: "processed",
+            currency_id: data.currency_id,
+            file_name: data.file_name,
+          };
+        }
+        logger.info(`Task ${taskId} ainda sem file_name direto (status: ${data.status}). Verificando lista de relatórios...`);
+      } else {
+        logger.warn(`Endpoint de task ${taskId} retornou status ${response.status}. Consultando lista de relatórios...`);
       }
-      logger.warn(`Endpoint de task ${taskId} retornou status ${response.status}. Consultando lista de relatórios...`);
     } catch (err: any) {
       logger.warn(`Falha na chamada direta da task ${taskId}: ${err.message}. Consultando lista de relatórios...`);
     }
@@ -235,20 +239,29 @@ export class MercadoPagoReleaseReportService {
         if (match && match.file_name) {
           return {
             id: match.id,
-            status: match.status === "enabled" ? "processed" : match.status,
+            status: "processed",
             currency_id: match.currency_id || "ARS",
             file_name: match.file_name,
           };
         }
 
-        // Se não encontrar pelo ID exato, usa o mais recente que já tenha file_name gerado
-        const readyReport = list.find((item: any) => Boolean(item.file_name));
-        if (readyReport) {
+        // Se a task direta ainda não gerou arquivo mas já existe relatório pronto de hoje:
+        // usa o relatório mais recente de hoje que já tenha file_name
+        const todayBuenosAires = DateTime.now().setZone(ARGENTINA_TIMEZONE).toFormat("yyyy-MM-dd");
+        const todayReport = list.find((item: any) => {
+          if (!item.file_name) return false;
+          const reportDate = item.begin_date ? DateTime.fromISO(item.begin_date).setZone(ARGENTINA_TIMEZONE).toFormat("yyyy-MM-dd") : "";
+          const createdDate = item.date_created ? DateTime.fromISO(item.date_created).setZone(ARGENTINA_TIMEZONE).toFormat("yyyy-MM-dd") : "";
+          return reportDate === todayBuenosAires || createdDate === todayBuenosAires;
+        });
+
+        if (todayReport && todayReport.file_name) {
+          logger.info("Utilizando relatório pronto de hoje disponível no Mercado Pago", { fileName: todayReport.file_name });
           return {
-            id: readyReport.id,
-            status: readyReport.status === "enabled" ? "processed" : readyReport.status,
-            currency_id: readyReport.currency_id || "ARS",
-            file_name: readyReport.file_name,
+            id: todayReport.id,
+            status: "processed",
+            currency_id: todayReport.currency_id || "ARS",
+            file_name: todayReport.file_name,
           };
         }
       }
