@@ -189,24 +189,76 @@ export class MercadoPagoReleaseReportService {
   }
 
   /**
-   * 44. CONSULTAR STATUS DO RELATÓRIO DE SALDO
-   * GET /v1/account/release_report/task/{TASK_ID}
+   * Lista relatórios gerados via GET /v1/account/release_report/list
    */
-  async getReleaseReportTask(taskId: string | number): Promise<ReleaseReportTaskResponse> {
-    const url = `${this.baseUrl}/v1/account/release_report/task/${taskId}`;
+  async listReleaseReports(): Promise<any[]> {
+    const url = `${this.baseUrl}/v1/account/release_report/list`;
     const response = await this.fetchWithRetry(url, { method: "GET" });
-
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`Erro ao consultar tarefa de Release Report ${taskId} (${response.status}): ${errText}`);
+      logger.warn(`Erro ao listar Release Reports (${response.status}): ${errText}`);
+      return [];
+    }
+    return await response.json();
+  }
+
+  /**
+   * 44. CONSULTAR STATUS DO RELATÓRIO DE SALDO
+   * GET /v1/account/release_report/task/{TASK_ID} com fallback resiliente para /v1/account/release_report/list
+   */
+  async getReleaseReportTask(taskId: string | number): Promise<ReleaseReportTaskResponse> {
+    // 1. Tenta consulta direta da task
+    try {
+      const url = `${this.baseUrl}/v1/account/release_report/task/${taskId}`;
+      const response = await this.fetchWithRetry(url, { method: "GET" });
+
+      if (response.ok) {
+        const data = await response.json();
+        return {
+          id: data.id,
+          status: data.status === "enabled" ? "processed" : data.status,
+          currency_id: data.currency_id,
+          file_name: data.file_name,
+        };
+      }
+      logger.warn(`Endpoint de task ${taskId} retornou status ${response.status}. Consultando lista de relatórios...`);
+    } catch (err: any) {
+      logger.warn(`Falha na chamada direta da task ${taskId}: ${err.message}. Consultando lista de relatórios...`);
     }
 
-    const data = await response.json();
+    // 2. Fallback resiliente: consulta /v1/account/release_report/list
+    try {
+      const list = await this.listReleaseReports();
+      if (Array.isArray(list) && list.length > 0) {
+        // Busca relatório com ID correspondente
+        const match = list.find((item: any) => String(item.id) === String(taskId));
+        if (match && match.file_name) {
+          return {
+            id: match.id,
+            status: match.status === "enabled" ? "processed" : match.status,
+            currency_id: match.currency_id || "ARS",
+            file_name: match.file_name,
+          };
+        }
+
+        // Se não encontrar pelo ID exato, usa o mais recente que já tenha file_name gerado
+        const readyReport = list.find((item: any) => Boolean(item.file_name));
+        if (readyReport) {
+          return {
+            id: readyReport.id,
+            status: readyReport.status === "enabled" ? "processed" : readyReport.status,
+            currency_id: readyReport.currency_id || "ARS",
+            file_name: readyReport.file_name,
+          };
+        }
+      }
+    } catch (listErr: any) {
+      logger.error(`Erro ao consultar fallback de listReleaseReports: ${listErr.message}`);
+    }
+
     return {
-      id: data.id,
-      status: data.status,
-      currency_id: data.currency_id,
-      file_name: data.file_name,
+      id: taskId,
+      status: "pending",
     };
   }
 

@@ -75,7 +75,7 @@ export class MercadoPagoBalanceParser {
       if (recordType === "initial_available_balance" || recordType === "initial_balance") {
         // O saldo inicial pode estar em NET_CREDIT_AMOUNT ou GROSS_AMOUNT
         initialBalanceMinor = creditMinor !== ZERO_MINOR ? creditMinor : grossMinor !== ZERO_MINOR ? grossMinor : ZERO_MINOR;
-      } else if (recordType === "total") {
+      } else if (recordType === "total" || recordType === "total_available_balance" || recordType === "total_balance") {
         totalLineOccurrences++;
         const currentTotal = creditMinor !== ZERO_MINOR ? creditMinor : grossMinor !== ZERO_MINOR ? grossMinor : debitMinor !== ZERO_MINOR ? -debitMinor : ZERO_MINOR;
         if (totalLineBalanceMinor !== null && totalLineBalanceMinor !== currentTotal) {

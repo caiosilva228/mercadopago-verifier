@@ -261,10 +261,14 @@ export class VerificationWorker {
 
       const loadTransactions = async (): Promise<MercadoPagoTransaction[]> => {
         const dateUtcRange = getArgentinaDayUtcRange(targetDateStr);
-        const { data: dbTransactions, error: txErr } = await supabase
-          .from("mercadopago_transactions")
-          .select("*")
-          .or(`report_id.eq.${reportId},and(transaction_date.gte.${dateUtcRange.beginDate},transaction_date.lte.${dateUtcRange.endDate})`);
+        let query = supabase.from("mercadopago_transactions").select("*");
+        if (reportId) {
+          query = query.or(`report_id.eq.${reportId},and(transaction_date.gte.${dateUtcRange.beginDate},transaction_date.lte.${dateUtcRange.endDate})`);
+        } else {
+          query = query.gte("transaction_date", dateUtcRange.beginDate).lte("transaction_date", dateUtcRange.endDate);
+        }
+
+        const { data: dbTransactions, error: txErr } = await query;
 
         if (txErr) {
           throw new Error(`Falha ao ler transações do banco: ${txErr.message}`);
@@ -322,6 +326,56 @@ export class VerificationWorker {
         },
         formattedTxs
       );
+
+      // Se não encontrou no settlement report, busca no release report (para transferências via saldo MP / CVU)
+      if (matchResult.status !== "verified") {
+        logger.info(`Comprovante ainda não verificado (status: ${matchResult.status}). Buscando em relatórios de liberação (Release Report)...`);
+        try {
+          const releaseReports = await this.releaseReportService.listReleaseReports();
+          const latestRelease = Array.isArray(releaseReports) ? releaseReports.find((r: any) => Boolean(r.file_name)) : null;
+
+          if (latestRelease?.file_name) {
+            const releaseCsv = await this.releaseReportService.downloadReleaseReportCsv(latestRelease.file_name);
+            const releaseTxs = await this.mpProvider.parseReleaseReportCsv(releaseCsv);
+            for (const tx of releaseTxs) {
+              await supabase.from("mercadopago_transactions").upsert(
+                {
+                  source_id: tx.source_id,
+                  pay_bank_transfer_id: tx.pay_bank_transfer_id,
+                  external_reference: tx.external_reference,
+                  transaction_type: tx.transaction_type,
+                  transaction_amount_minor: Number(tx.transaction_amount_minor),
+                  transaction_currency: tx.transaction_currency,
+                  payment_method_type: tx.payment_method_type,
+                  payment_method: tx.payment_method,
+                  transaction_date: tx.transaction_date,
+                  settlement_date: tx.settlement_date,
+                  settlement_net_amount_minor: tx.settlement_net_amount_minor ? Number(tx.settlement_net_amount_minor) : null,
+                  description: tx.description,
+                  raw_row: tx.raw_row,
+                },
+                { onConflict: "source_id" }
+              );
+            }
+
+            formattedTxs = await loadTransactions();
+            matchResult = PaymentMatcher.match(
+              {
+                amount: Number(receipt.amount_display),
+                currency: (receipt.currency || "ARS") as "ARS" | "BRL" | "USD",
+                transactionDate: receipt.transaction_date,
+                transactionTime: receipt.transaction_time,
+                operationNumber: receipt.operation_number,
+                transactionReference: receipt.transaction_reference,
+                alreadyUsedSourceIds: usedSourceIds,
+              },
+              formattedTxs
+            );
+          }
+        } catch (releaseErr) {
+          logger.warn("Falha não-bloqueante ao verificar Release Report existente", { error: releaseErr });
+        }
+      }
 
       // Se for comprovante de hoje e não encontrou correspondência precisa (not_found ou horário muito distante > 30min), solicita relatório fresco
       const isMissingOrStale =
@@ -473,6 +527,34 @@ export class VerificationWorker {
         taskId,
         fileName,
       });
+
+      // Ingestão das transações do Release Report no banco (garante que transferências via saldo MP fiquem salvas)
+      try {
+        const releaseTxs = await this.mpProvider.parseReleaseReportCsv(csvContent);
+        logger.info("Ingerindo transações do Release Report no banco", { totalTxs: releaseTxs.length });
+        for (const tx of releaseTxs) {
+          await supabase.from("mercadopago_transactions").upsert(
+            {
+              source_id: tx.source_id,
+              pay_bank_transfer_id: tx.pay_bank_transfer_id,
+              external_reference: tx.external_reference,
+              transaction_type: tx.transaction_type,
+              transaction_amount_minor: Number(tx.transaction_amount_minor),
+              transaction_currency: tx.transaction_currency,
+              payment_method_type: tx.payment_method_type,
+              payment_method: tx.payment_method,
+              transaction_date: tx.transaction_date,
+              settlement_date: tx.settlement_date,
+              settlement_net_amount_minor: tx.settlement_net_amount_minor ? Number(tx.settlement_net_amount_minor) : null,
+              description: tx.description,
+              raw_row: tx.raw_row,
+            },
+            { onConflict: "source_id" }
+          );
+        }
+      } catch (ingestErr) {
+        logger.warn("Aviso: falha não-bloqueante ao ingerir transações do Release Report", { error: ingestErr });
+      }
 
       // 6. Salva snapshot no banco (52. BANCO DE DADOS PARA SALDO)
       const { data: snapshot, error: snapErr } = await supabase

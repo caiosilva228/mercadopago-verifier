@@ -269,6 +269,86 @@ export class MercadoPagoProvider implements PaymentVerificationProvider {
 
     return transactions;
   }
+
+  /**
+   * Faz parsing das transações contidas no CSV do Release Report (liberações e pagamentos).
+   * Converte entradas com crédito positivo (ex: transferências via available_money, cvu, etc.)
+   * para o formato uniforme de MercadoPagoTransaction.
+   */
+  async parseReleaseReportCsv(csvContent: string): Promise<Omit<MercadoPagoTransaction, "id" | "report_id">[]> {
+    if (!csvContent || csvContent.trim().length === 0) {
+      return [];
+    }
+
+    const firstLine = csvContent.split("\n")[0] || "";
+    const delimiter = firstLine.includes(";") ? ";" : ",";
+
+    const records = parse(csvContent, {
+      columns: (header: string[]) =>
+        header.map((col) => col.trim().toUpperCase().replace(/[\r\n\t]/g, "")),
+      skip_empty_lines: true,
+      trim: true,
+      delimiter,
+      relax_column_count: true,
+      bom: true,
+    }) as Record<string, string>[];
+
+    const transactions: Omit<MercadoPagoTransaction, "id" | "report_id">[] = [];
+
+    for (const row of records) {
+      const recordType = (row["RECORD_TYPE"] || row["RECORDTYPE"] || "").trim().toLowerCase();
+      // Ignora linhas de saldo inicial ou totalizador
+      if (
+        recordType === "initial_available_balance" ||
+        recordType === "initial_balance" ||
+        recordType === "total" ||
+        recordType === "total_available_balance" ||
+        recordType === "total_balance"
+      ) {
+        continue;
+      }
+
+      const sourceId = (row["SOURCE_ID"] || row["ID"] || "").trim();
+      if (!sourceId) continue;
+
+      const creditStr = (row["NET_CREDIT_AMOUNT"] || row["NETCREDITAMOUNT"] || row["GROSS_AMOUNT"] || "").trim();
+      if (!creditStr || creditStr === "0" || creditStr === "0.00" || creditStr === "-") {
+        continue;
+      }
+
+      const rawDate = row["DATE"] || row["TRANSACTION_DATE"] || "";
+      let txDateIso: string;
+      try {
+        txDateIso = parseMercadoPagoReportDate(rawDate).toISO() || new Date().toISOString();
+      } catch {
+        txDateIso = new Date().toISOString();
+      }
+
+      const amountMinor = toMinorUnits(creditStr);
+      const amountDisplay = fromMinorUnits(amountMinor);
+      const pm = (row["PAYMENT_METHOD"] || row["PAYMENTMETHOD"] || "available_money").toLowerCase();
+      const pmt = pm === "cvu" ? "bank_transfer" : "available_money";
+
+      transactions.push({
+        source_id: sourceId,
+        pay_bank_transfer_id: null,
+        external_reference: row["EXTERNAL_REFERENCE"] || null,
+        transaction_type: "SETTLEMENT",
+        transaction_amount_minor: amountMinor,
+        transaction_amount_display: amountDisplay,
+        transaction_currency: "ARS",
+        payment_method_type: pmt,
+        payment_method: pm,
+        transaction_date: txDateIso,
+        settlement_date: txDateIso,
+        settlement_net_amount_minor: amountMinor,
+        description: row["DESCRIPTION"] || recordType || null,
+        raw_row: row,
+      });
+    }
+
+    return transactions;
+  }
 }
 
 export const MercadoPagoAccountMoneyService = MercadoPagoProvider;

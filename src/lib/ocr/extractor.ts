@@ -235,9 +235,14 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     }
 
     // --- IDENTIFICAÇÃO DE CÓDIGOS E OPERAÇÃO ESPECÍFICOS (COELSA, TRANSACCIÓN, MERCADO PAGO) ---
+    const mpOpMatch = fullText.match(/(?:N[.°º#\s]*de\s+operaci[oó]n(?:\s+de\s+Mercado\s*Pago)?|operaci[oó]n\s+de\s+Mercado\s*Pago)[\s:N°º#\n\r]*([0-9]{8,25})/i);
     const coelsaMatch = fullText.match(/COELSA\s+ID[\s:\n\r]+([0-9A-Za-z]{6,35})/i);
     const txCodeMatch = fullText.match(/C[oó]digo\s+de\s+transacci[oó]n[\s:\n\r]+([0-9a-fA-F\-]{10,40})/i);
-    if (coelsaMatch && coelsaMatch[1]) {
+    if (mpOpMatch && mpOpMatch[1]) {
+      operationNumber = mpOpMatch[1].trim();
+      transactionReference = mpOpMatch[1].trim();
+      transactionNumber = mpOpMatch[1].trim();
+    } else if (coelsaMatch && coelsaMatch[1]) {
       operationNumber = coelsaMatch[1].trim();
       transactionReference = coelsaMatch[1].trim();
       transactionNumber = coelsaMatch[1].trim();
@@ -247,7 +252,7 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
       transactionNumber = txCodeMatch[1].trim();
     } else {
       const opRegexes = [
-        /(?:c[oó]digo\s+de\s+referencia|c[oó]digo\s+de\s+transferencia|referencia\s+bancaria|n[uú]mero\s+de\s+transacci[oó]n|n[uú]mero\s+de\s+operaci[oó]n)[\s:N°º#\n\r]*([0-9A-Za-z\-_]{6,35})/i,
+        /(?:N[.°º#\s]*de\s+operaci[oó]n|c[oó]digo\s+de\s+referencia|c[oó]digo\s+de\s+transferencia|referencia\s+bancaria|n[uú]mero\s+de\s+transacci[oó]n|n[uú]mero\s+de\s+operaci[oó]n)[\s\S]{0,30}?([0-9A-Za-z\-_]{8,35})/i,
         /(?:operaci[oó]n|transacci[oó]n|n[uú]mero|nro|id|c[oó]digo|comprobante)[\s:N°º#\n\r]*([0-9A-Za-z\-_]{6,35})/i,
       ];
       for (const r of opRegexes) {
@@ -328,8 +333,8 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
       const extractedPeople: string[] = [];
       for (let i = 0; i < rawLines.length; i++) {
         const line = rawLines[i];
-        // Remove artefatos de bullets/ícones OCR como <S, <s, *, -, •, etc.
-        const cleaned = line.replace(/^(?:<S|<s|<|\*\s*|\•\s*|\-\s*|S\s+|s\s+|[0-9\s])+/, "").trim();
+        // Remove artefatos de bullets/ícones OCR como <S, <s, *, -, •, =, ©, etc.
+        const cleaned = line.replace(/^(?:[=©<S<s<*•\-~|@#>]+|\*\s*|\•\s*|\-\s*|S\s+|s\s+|[0-9\s])+/, "").trim();
         if (
           cleaned.length >= 3 &&
           !/^(Mercado\s*Pago|CVU|CBU|CUIT|CUIL|Origen|Destino|Varios|Motivo)/i.test(cleaned) &&

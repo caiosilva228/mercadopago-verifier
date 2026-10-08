@@ -117,8 +117,9 @@ export class PaymentMatcher {
 
     // 1. Filtragem obrigatória estrita
     const eligibleTransactions = transactions.filter((tx) => {
-      // Regra 1: Tipo de transação deve ser SETTLEMENT
-      if (tx.transaction_type.toUpperCase() !== "SETTLEMENT") return false;
+      // Regra 1: Tipo de transação deve ser SETTLEMENT, RELEASE ou PAYMENT
+      const txType = tx.transaction_type.toUpperCase();
+      if (txType !== "SETTLEMENT" && txType !== "RELEASE" && txType !== "PAYMENT") return false;
 
       // Regra 2 & 3: Transferências recebidas via CVU/banco tradicional ou entre contas Mercado Pago (available_money / account_money)
       const pmt = (tx.payment_method_type || "").toLowerCase();
