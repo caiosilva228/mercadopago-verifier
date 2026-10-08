@@ -333,8 +333,9 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
       const extractedPeople: string[] = [];
       for (let i = 0; i < rawLines.length; i++) {
         const line = rawLines[i];
-        // Remove artefatos de bullets/ícones OCR como <S, <s, *, -, •, =, ©, etc.
-        const cleaned = line.replace(/^(?:[=©<S<s<*•\-~|@#>]+|\*\s*|\•\s*|\-\s*|S\s+|s\s+|[0-9\s])+/, "").trim();
+        // Remove artefatos de bullets/ícones OCR como &, =, ©, <, >, *, -, •, ~, |, @, #, dígitos isolados, etc.
+        let cleaned = line.replace(/^[&=©<>*•\-~|@#º°\^—_+/\\()[\]\d\s]+/, "").trim();
+        cleaned = cleaned.replace(/^[&=<>*•\-~|@#]\s+/, "").trim();
         if (
           cleaned.length >= 3 &&
           !/^(Mercado\s*Pago|CVU|CBU|CUIT|CUIL|Origen|Destino|Varios|Motivo)/i.test(cleaned) &&
@@ -391,12 +392,18 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
       }
     }
 
-    // Limpeza de segurança final para evitar falsos positivos
-    if (senderName && /^y\s+destino/i.test(senderName)) {
-      senderName = null;
+    // Limpeza de segurança final para evitar falsos positivos e artefatos de OCR
+    if (senderName) {
+      senderName = senderName.replace(/^[&=©<>*•\-~|@#º°\^—_+/\\()[\]\s]+/, "").trim();
+      if (/^y\s+destino/i.test(senderName)) {
+        senderName = null;
+      }
     }
-    if (recipientName && /^Alejandra$/i.test(recipientName) && !cleanFullText.includes("Alejandra")) {
-      recipientName = null;
+    if (recipientName) {
+      recipientName = recipientName.replace(/^[&=©<>*•\-~|@#º°\^—_+/\\()[\]\s]+/, "").trim();
+      if (/^Alejandra$/i.test(recipientName) && !cleanFullText.includes("Alejandra")) {
+        recipientName = null;
+      }
     }
 
     // Ajuste de confiança baseado na presença de campos críticos

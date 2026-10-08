@@ -177,6 +177,9 @@ export interface PaymentVerificationProvider {
   getReportStatus(taskId: string): Promise<MercadoPagoReportTask>;
   downloadReport(fileName: string): Promise<string>;
   parseSettlementCsv(csvContent: string): Promise<Omit<MercadoPagoTransaction, "id" | "report_id">[]>;
+  getPaymentById?(paymentId: string | number): Promise<any | null>;
+  searchPayments?(options?: { beginDate?: string; endDate?: string; limit?: number }): Promise<any[]>;
+  convertPaymentToTransaction?(payment: any): Omit<MercadoPagoTransaction, "id" | "report_id">;
 }
 
 // ==========================================

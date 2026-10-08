@@ -349,6 +349,118 @@ export class MercadoPagoProvider implements PaymentVerificationProvider {
 
     return transactions;
   }
+
+  /**
+   * Consulta um pagamento diretamente na API REST do Mercado Pago em tempo real (< 200ms).
+   */
+  async getPaymentById(paymentId: string | number): Promise<any | null> {
+    const cleanId = String(paymentId).replace(/\D/g, "");
+    if (!cleanId) return null;
+
+    const url = `${this.baseUrl}/v1/payments/${cleanId}`;
+    logger.info("Consultando pagamento diretamente na API em tempo real do Mercado Pago", { paymentId: cleanId });
+
+    try {
+      const res = await this.fetchWithRetry(url, { method: "GET" });
+      if (res.status === 404) {
+        logger.info("Pagamento não encontrado na API REST do Mercado Pago", { paymentId: cleanId });
+        return null;
+      }
+      if (!res.ok) {
+        const err = await res.text();
+        logger.warn(`Erro ao consultar pagamento ${cleanId}: ${res.status} - ${err}`);
+        return null;
+      }
+
+      return await res.json();
+    } catch (err) {
+      logger.error(`Falha ao buscar pagamento ${cleanId} na API REST`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Pesquisa pagamentos recentes diretamente na API REST do Mercado Pago em tempo real.
+   */
+  async searchPayments(options: {
+    beginDate?: string;
+    endDate?: string;
+    limit?: number;
+  } = {}): Promise<any[]> {
+    const limit = options.limit || 50;
+    let url = `${this.baseUrl}/v1/payments/search?sort=date_created&criteria=desc&limit=${limit}`;
+
+    if (options.beginDate && options.endDate) {
+      url += `&range=date_created&begin_date=${encodeURIComponent(options.beginDate)}&end_date=${encodeURIComponent(options.endDate)}`;
+    }
+
+    logger.info("Pesquisando pagamentos na API REST em tempo real do Mercado Pago", {
+      url,
+      beginDate: options.beginDate,
+      endDate: options.endDate,
+    });
+
+    try {
+      const res = await this.fetchWithRetry(url, { method: "GET" });
+      if (!res.ok) {
+        const err = await res.text();
+        logger.warn(`Erro ao pesquisar pagamentos na API REST: ${res.status} - ${err}`);
+        return [];
+      }
+
+      const data = await res.json();
+      return Array.isArray(data.results) ? data.results : [];
+    } catch (err) {
+      logger.error("Falha ao pesquisar pagamentos na API REST", err);
+      return [];
+    }
+  }
+
+  /**
+   * Converte um pagamento retornado pela API REST do Mercado Pago para a estrutura uniforme MercadoPagoTransaction.
+   */
+  convertPaymentToTransaction(payment: any): Omit<MercadoPagoTransaction, "id" | "report_id"> {
+    const rawAmount = String(payment.transaction_amount || "0");
+    const amountMinor = toMinorUnits(rawAmount);
+    const amountDisplay = fromMinorUnits(amountMinor);
+
+    const netReceived = payment.transaction_details?.net_received_amount != null
+      ? String(payment.transaction_details.net_received_amount)
+      : rawAmount;
+    const netAmountMinor = toMinorUnits(netReceived);
+
+    const txDateIso = payment.date_created
+      ? new Date(payment.date_created).toISOString()
+      : new Date().toISOString();
+
+    const settlementDateIso = payment.date_approved
+      ? new Date(payment.date_approved).toISOString()
+      : null;
+
+    const pm = String(payment.payment_method_id || payment.payment_method?.id || "account_money").toLowerCase();
+    const pmt = String(payment.payment_type_id || payment.payment_method?.type || (pm === "cvu" ? "bank_transfer" : "account_money")).toLowerCase();
+
+    const bankTransferId = payment.point_of_interaction?.transaction_data?.bank_transfer_id
+      ? String(payment.point_of_interaction.transaction_data.bank_transfer_id)
+      : null;
+
+    return {
+      source_id: String(payment.id),
+      pay_bank_transfer_id: bankTransferId,
+      external_reference: payment.external_reference || null,
+      transaction_type: "PAYMENT",
+      transaction_amount_minor: amountMinor,
+      transaction_amount_display: amountDisplay,
+      transaction_currency: String(payment.currency_id || "ARS").toUpperCase(),
+      payment_method_type: pmt,
+      payment_method: pm,
+      transaction_date: txDateIso,
+      settlement_date: settlementDateIso,
+      settlement_net_amount_minor: netAmountMinor,
+      description: payment.description || null,
+      raw_row: payment,
+    };
+  }
 }
 
 export const MercadoPagoAccountMoneyService = MercadoPagoProvider;
