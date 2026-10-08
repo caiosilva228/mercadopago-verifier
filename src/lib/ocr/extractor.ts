@@ -234,20 +234,32 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
       transactionTime = `${hour}:${minute}:${second}`;
     }
 
-    // --- IDENTIFICAÇÃO DE CÓDIGOS E OPERAÇÃO ---
-    const opRegexes = [
-      /(?:c[oó]digo\s+de\s+referencia|c[oó]digo\s+de\s+transferencia|referencia\s+bancaria|n[uú]mero\s+de\s+transacci[oó]n|n[uú]mero\s+de\s+operaci[oó]n)[\s:N°º#\n\r]*([0-9A-Za-z\-_]{6,35})/i,
-      /(?:operaci[oó]n|transacci[oó]n|n[uú]mero|nro|id|c[oó]digo|comprobante)[\s:N°º#\n\r]*([0-9A-Za-z\-_]{6,35})/i,
-    ];
-    for (const r of opRegexes) {
-      const match = fullText.match(r);
-      if (match && match[1]) {
-        const val = match[1].trim();
-        if (!/^(de|para|con|por|transferencia|comprobante|varios)$/i.test(val)) {
-          operationNumber = val;
-          transactionReference = val;
-          transactionNumber = val;
-          break;
+    // --- IDENTIFICAÇÃO DE CÓDIGOS E OPERAÇÃO ESPECÍFICOS (COELSA, TRANSACCIÓN, MERCADO PAGO) ---
+    const coelsaMatch = fullText.match(/COELSA\s+ID[\s:\n\r]+([0-9A-Za-z]{6,35})/i);
+    const txCodeMatch = fullText.match(/C[oó]digo\s+de\s+transacci[oó]n[\s:\n\r]+([0-9a-fA-F\-]{10,40})/i);
+    if (coelsaMatch && coelsaMatch[1]) {
+      operationNumber = coelsaMatch[1].trim();
+      transactionReference = coelsaMatch[1].trim();
+      transactionNumber = coelsaMatch[1].trim();
+    } else if (txCodeMatch && txCodeMatch[1]) {
+      operationNumber = txCodeMatch[1].trim();
+      transactionReference = txCodeMatch[1].trim();
+      transactionNumber = txCodeMatch[1].trim();
+    } else {
+      const opRegexes = [
+        /(?:c[oó]digo\s+de\s+referencia|c[oó]digo\s+de\s+transferencia|referencia\s+bancaria|n[uú]mero\s+de\s+transacci[oó]n|n[uú]mero\s+de\s+operaci[oó]n)[\s:N°º#\n\r]*([0-9A-Za-z\-_]{6,35})/i,
+        /(?:operaci[oó]n|transacci[oó]n|n[uú]mero|nro|id|c[oó]digo|comprobante)[\s:N°º#\n\r]*([0-9A-Za-z\-_]{6,35})/i,
+      ];
+      for (const r of opRegexes) {
+        const match = fullText.match(r);
+        if (match && match[1]) {
+          const val = match[1].trim();
+          if (!/^(de|para|con|por|transferencia|comprobante|varios|coelsa|bancaria)$/i.test(val)) {
+            operationNumber = val;
+            transactionReference = val;
+            transactionNumber = val;
+            break;
+          }
         }
       }
     }
@@ -257,6 +269,47 @@ export class DefaultReceiptTextExtractor implements ReceiptTextExtractor {
     const cleanFullText = fullText
       .replace(/(?:Hac[eé]\s+pagos|Descarg[aá]\s+la\s+app|Transfer[ií]\s+\$)[\s\S]*/i, "")
       .trim();
+
+    // --- IDENTIFICAÇÃO DE ESTRUTURA "Cuenta origen" / "Cuenta destino" (NARANJA X E AFINS) ---
+    const cuentaOrigenMatch = cleanFullText.match(/Cuenta\s+origen([\s\S]*?)Cuenta\s+destino/i);
+    const cuentaDestinoMatch = cleanFullText.match(/Cuenta\s+destino([\s\S]*?)(?:Informaci[oó]n\s+de\s+la\s+operaci[oó]n|Naranja\s+Digital|$)/i);
+
+    if (cuentaDestinoMatch) {
+      const destSection = cuentaDestinoMatch[1];
+      const destCvuMatch = destSection.match(/(?:CVU|CBU)[\s:\n\r]+([0-9]{15,26})/i);
+      if (destCvuMatch) {
+        destinationAlias = destCvuMatch[1];
+      }
+
+      const destLines = destSection.split("\n").map((l) => l.trim()).filter(Boolean);
+      for (const l of destLines) {
+        const cleaned = l.replace(/^(?:ae\.|\*|\-|\•|wy|[0-9\s])+/, "").trim();
+        if (
+          cleaned.length >= 3 &&
+          !/^(Mercado\s*Pago|Naranja\s*X|CVU|CBU|CUIT|CUIL|Cuenta|Destino)/i.test(cleaned) &&
+          !/^[0-9\-\.\/\s]+$/.test(cleaned)
+        ) {
+          recipientName = cleaned;
+          break;
+        }
+      }
+    }
+
+    if (cuentaOrigenMatch && !senderName) {
+      const origSection = cuentaOrigenMatch[1];
+      const origLines = origSection.split("\n").map((l) => l.trim()).filter(Boolean);
+      for (const l of origLines) {
+        const cleaned = l.replace(/^(?:NX\s+|\*|\-|\•|[0-9\s])+/, "").trim();
+        if (
+          cleaned.length >= 3 &&
+          !/^(Naranja\s*X|Mercado\s*Pago|CBU|CVU|CUIT|CUIL|Cuenta|Origen)/i.test(cleaned) &&
+          !/^[0-9\-\.\/\s]+$/.test(cleaned)
+        ) {
+          senderName = cleaned;
+          break;
+        }
+      }
+    }
 
     // --- IDENTIFICAÇÃO DE ALIAS / CVU & NOMES ESTRUTURADOS (MERCADO PAGO) ---
     // Em comprovantes do Mercado Pago ("Origen y destino"):

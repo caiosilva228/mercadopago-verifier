@@ -798,7 +798,7 @@ export default function VerificationDashboard() {
                 </div>
               )}
 
-              {/* CASO NOT_FOUND (CARD VERMELHO) */}
+              {/* CASO NOT_FOUND (CARD VERMELHO / COM AVISO DE CONSOLIDAÇÃO EM TEMPO REAL) */}
               {result.status === "not_found" && (
                 <div className="bg-rose-950/40 border-2 border-rose-500/70 rounded-2xl p-6 sm:p-8 space-y-4 shadow-2xl">
                   <div className="flex items-center gap-4">
@@ -810,26 +810,55 @@ export default function VerificationDashboard() {
                         ❌ TRANSFERÊNCIA NÃO ENCONTRADA
                       </h2>
                       <p className="text-sm text-rose-200/80 mt-0.5">
-                        Nenhuma entrada correspondente foi encontrada no Mercado Pago para os dados do comprovante.
+                        Nenhuma entrada correspondente foi encontrada no Mercado Pago para os dados do comprovante até o momento.
                       </p>
                     </div>
                   </div>
-                  <p className="text-xs text-slate-400">
-                    Certifique-se de que a transferência realmente foi processada pelo banco e creditada na data informada.
-                  </p>
+
+                  <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-750 text-xs text-slate-300 space-y-2">
+                    <div className="flex items-center gap-2 text-sky-400 font-semibold">
+                      <Clock className="w-4 h-4 shrink-0" />
+                      <span>Transferência realizada recentemente?</span>
+                    </div>
+                    <p className="text-slate-400 leading-relaxed">
+                      Transferências interbancárias argentinas (feitas via <strong>Naranja X, Ualá, Coelsa ou bancos tradicionais</strong>) podem levar de <strong>15 a 30 minutos</strong> para serem liquidadas e constarem no extrato oficial de conciliação do Mercado Pago.
+                    </p>
+                  </div>
+
+                  {/* Botões de Ação */}
+                  <div className="flex flex-wrap items-center justify-center gap-3 pt-3">
+                    <button
+                      onClick={() => {
+                        setResult(null);
+                        startVerification();
+                      }}
+                      className="px-6 py-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-sm transition-colors flex items-center gap-2 shadow-lg shadow-sky-600/30"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>Tentar Novamente / Reprocessar Agora</span>
+                    </button>
+                    <button
+                      onClick={resetAll}
+                      className="px-6 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-sm border border-slate-700 transition-colors flex items-center gap-2"
+                    >
+                      <span>Verificar outro comprovante</span>
+                    </button>
+                  </div>
                 </div>
               )}
 
-              {/* Botão de nova verificação */}
-              <div className="flex justify-center pt-4">
-                <button
-                  onClick={resetAll}
-                  className="px-6 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-sm border border-slate-700 transition-colors flex items-center gap-2"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                  <span>Verificar outro comprovante</span>
-                </button>
-              </div>
+              {/* Botão de nova verificação para outros status */}
+              {result.status !== "not_found" && (
+                <div className="flex justify-center pt-4">
+                  <button
+                    onClick={resetAll}
+                    className="px-6 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold text-sm border border-slate-700 transition-colors flex items-center gap-2"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Verificar outro comprovante</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
